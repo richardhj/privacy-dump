@@ -1,0 +1,35 @@
+{
+    "name": "richardhj/privacy-dump",
+    "description": "A utility to create anonymized database dumps",
+    "type": "library",
+    "license": "GPL-3.0-or-later",
+    "authors": [
+        {
+            "name": "Richard Henkenjohann",
+            "email": "richardhenkenjohann@googlemail.com"
+        }
+    ],
+    "require": {
+        "php": "^7.1",
+        "ext-json": "*",
+        "ext-pdo": "*",
+        "doctrine/dbal": "^2.5",
+        "fzaninotto/faker": "^1.8",
+        "ifsnop/mysqldump-php": "^2.9",
+        "nyholm/dsn": "^1.0",
+        "symfony/config": "^4.4. || ^5.0",
+        "symfony/console": "^4.4 || ^5.0",
+        "symfony/dependency-injection": "^4.4 || ^5.0",
+        "symfony/finder": "^4.4 || ^5.0",
+        "symfony/yaml": "^4.4 || ^5.0",
+        "theseer/tokenizer": "^1.1"
+    },
+    "require-dev": {
+        "friendsofphp/php-cs-fixer": "^2.12"
+    },
+    "autoload": {
+        "psr-4": {
+            "Richardhj\\PrivacyDump\\": "src/"
+        }
+    }
+}

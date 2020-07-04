@@ -1,0 +1,218 @@
+<?php
+
+declare(strict_types=1);
+
+/*
+ * This file is part of richardhj/privacy-dump.
+ *
+ * Copyright (c) 2020-2020 Richard Henkenjohann
+ *
+ * @package   richardhj/privacy-dump.
+ * @author    Richard Henkenjohann <richardhenkenjohann@googlemail.com>
+ * @copyright 2020-2020 Richard Henkenjohann
+ * @license   GPL-3.0-only
+ */
+
+namespace Richardhj\PrivacyDump\Converter;
+
+use RuntimeException;
+use TheSeer\Tokenizer\Token;
+use TheSeer\Tokenizer\Tokenizer;
+
+class ConditionBuilder
+{
+    private $tokenizer;
+    private $statementBlacklist = ['<?php', '<?', '?>'];
+    private $functionAllowList  = [
+        'addslashes', 'array_*', 'chr', 'date', 'empty', 'explode', 'htmlentities', 'htmlspecialchars',
+        'implode', 'in_array', 'is_*', 'isset', 'lcfirst', 'ltrim', 'mb_*', 'number_format', 'ord',
+        'preg_*', 'rtrim', 'sprintf', 'str_*', 'strchr', 'strcmp', 'strcoll', 'strcspn', 'stripcslashes',
+        'stripos', 'strip_tags', 'stripslashes', 'stristr', 'strlen', 'strnatcasecmp', 'strnatcmp',
+        'strncasecmp', 'strncmp', 'strpbrk', 'strpos', 'strrchr', 'strrev', 'strripos', 'strrpos',
+        'strspn', 'strstr', 'strtok', 'strtolower', 'strtoupper', 'strtr', 'substr', 'substr_*',
+        'time', 'trim', 'ucfirst', 'ucwords', 'vsprintf', 'wordwrap',
+    ];
+
+    public function __construct()
+    {
+        $this->tokenizer = new Tokenizer();
+    }
+
+    public function build(string $condition): string
+    {
+        if ('' === $condition) {
+            throw new RuntimeException('The condition must not be empty.');
+        }
+
+        // Sanitize the condition
+        $condition = $this->sanitizeCondition($condition);
+
+        // Validate the condition
+        $this->validateCondition($this->removeQuotedValues($condition));
+
+        // Parse the condition and return the result
+        return $this->parseCondition($condition);
+    }
+
+    private function sanitizeCondition(string $condition): string
+    {
+        // Remove line breaks
+        $condition = preg_replace('/[\r\n]+/', ' ', $condition);
+
+        // Add instruction separator
+        if (';' !== substr($condition, -1)) {
+            $condition .= ';';
+        }
+
+        // Add return statement
+        if ('return' !== substr($condition, 0, 6)) {
+            $condition = 'return '.$condition;
+        }
+
+        return $condition;
+    }
+
+    private function validateCondition(string $condition)
+    {
+        // Prevent usage of "=" operator
+        if (preg_match('/[^=!]=[^=]/', $condition)) {
+            throw new RuntimeException('The operator "=" is not allowed in converter conditions.');
+        }
+
+        // Prevent usage of "$" character
+        if (preg_match('/\$/', $condition)) {
+            throw new RuntimeException('The character "$" is not allowed in converter conditions.');
+        }
+
+        // Prevent the use of some statements
+        foreach ($this->statementBlacklist as $statement) {
+            if (false !== strpos($condition, $statement)) {
+                $message = sprintf('The statement "%s" is not allowed in converter conditions.', $statement);
+                throw new RuntimeException($message);
+            }
+        }
+
+        // Prevent the use of static functions
+        if (preg_match('/::(\w+) *\(/', $condition)) {
+            throw new RuntimeException('Static functions are not allowed in converter conditions.');
+        }
+
+        // Allow only specific functions
+        if (preg_match_all('/(\w+) *\(/', $condition, $matches)) {
+            foreach ($matches[1] as $function) {
+                if (!$this->isFunctionAllowed($function)) {
+                    $message = sprintf('The function "%s" is not allowed in converter conditions.', $function);
+                    throw new RuntimeException($message);
+                }
+            }
+        }
+    }
+
+    /**
+     * Parse the tokens that represent the condition, and return the parsed condition.
+     *
+     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+     */
+    private function parseCondition(string $condition): string
+    {
+        // Split the condition into PHP tokens
+        $tokens     = $this->tokenizer->parse('<?php '.$condition.' ?>');
+        $tokenCount = \count($tokens);
+        $result     = '';
+        $index      = -1;
+
+        foreach ($tokens as $token) {
+            ++$index;
+
+            // Skip characters representing a variable
+            if ($this->isVariableToken($token)) {
+                continue;
+            }
+
+            // Replace SQL column names by their values in the condition
+            if ('T_STRING' === $token->getName()
+                && $index >= 2
+                && $index <= $tokenCount - 3
+                && 'T_OPEN_CURLY' === $tokens[$index - 1]->getName()
+                && 'T_OPEN_CURLY' === $tokens[$index - 2]->getName()
+                && 'T_CLOSE_CURLY' === $tokens[$index + 1]->getName()
+                && 'T_CLOSE_CURLY' === $tokens[$index + 2]->getName()
+            ) {
+                $result .= "\$context['row_data']['{$token->getValue()}']";
+                continue;
+            }
+
+            // Replace SQL variable names by their values in the condition
+            if ('T_STRING' === $token->getName() && $index >= 1 && 'T_AT' === $tokens[$index - 1]->getName()) {
+                $result .= "\$context['vars']['{$token->getValue()}']";
+                continue;
+            }
+
+            $result .= $token->getValue();
+        }
+
+        // Remove the opening and closing tag that were added to generate the tokens
+        $result = $this->removePhpTags($result);
+
+        return $result;
+    }
+
+    /**
+     * Remove quoted values from a variable,
+     * e.g. "$s = 'value'" is converted to "$s = ''".
+     */
+    private function removeQuotedValues(string $input): string
+    {
+        // Split the condition into PHP tokens
+        $tokens = $this->tokenizer->parse('<?php '.$input.' ?>');
+        $result = '';
+
+        foreach ($tokens as $token) {
+            // Remove quoted values
+            $result .= 'T_CONSTANT_ENCAPSED_STRING' === $token->getName() ? "''" : $token->getValue();
+        }
+
+        // Remove the opening and closing tag that were added to generate the tokens
+        $result = $this->removePhpTags($result);
+
+        return $result;
+    }
+
+    /**
+     * Remove opening and closing PHP tags from a string.
+     */
+    private function removePhpTags(string $input): string
+    {
+        $input = ltrim($input, '<?php ');
+        $input = rtrim($input, ' ?>');
+
+        return $input;
+    }
+
+    /**
+     * Check if the token represents a variable.
+     */
+    private function isVariableToken(Token $token): bool
+    {
+        $name = $token->getName();
+
+        return 'T_OPEN_CURLY' === $name || 'T_CLOSE_CURLY' === $name || 'T_AT' === $name;
+    }
+
+    /**
+     * Check whether the specified PHP function is allowed.
+     */
+    private function isFunctionAllowed(string $function): bool
+    {
+        $allowed = false;
+
+        foreach ($this->functionAllowList as $pattern) {
+            if (fnmatch($pattern, $function)) {
+                $allowed = true;
+                break;
+            }
+        }
+
+        return $allowed;
+    }
+}
